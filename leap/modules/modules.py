@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 
-from .encoders import LBSNet, LEAPOccupancyDecoder, BaseModule
+from .encoders import LBSNet, LEAPOccupancyDecoder, OurOccupancyDecoder_StructureOnly, OurOccupancyDecoder_StructureOnly_NoCycle, BaseModule
+from .shape_net import ShapeNet
 
 
 class INVLBS(LBSNet):
@@ -66,6 +67,27 @@ class INVLBS(LBSNet):
         else:
             ret_interface = point_weights
 
+        '''
+        import open3d as o3d
+        import numpy as np
+        idx = 0
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(can_vertices[idx].detach().cpu().numpy())
+        o3d.io.write_point_cloud("debug/can_verts.ply", pcd) 
+        pcd.points = o3d.utility.Vector3dVector(posed_vertices[idx].detach().cpu().numpy())
+        o3d.io.write_point_cloud("debug/posed_verts.ply", pcd) 
+
+        pcd.points = o3d.utility.Vector3dVector(points[idx].detach().cpu().numpy())
+
+        for i in range(16):
+            colors = point_weights[idx, :, i].unsqueeze(1).detach().cpu().numpy()
+            colors = np.concatenate([colors, colors, colors], axis=1)
+            pcd.colors = o3d.utility.Vector3dVector(colors)
+            o3d.io.write_point_cloud(f"debug/points_{i}.ply", pcd) 
+            
+        exit()
+        '''
+
         return ret_interface
 
     @staticmethod
@@ -126,6 +148,25 @@ class FWDLBS(LBSNet):
         """
         vert_code = self.point_encoder(can_vertices)  # B x pn_dim
         point_weights = self._forward(points, vert_code)
+
+        '''
+        import open3d as o3d
+        import numpy as np
+        idx = 0
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(can_vertices[idx].detach().cpu().numpy())
+        o3d.io.write_point_cloud("debug/can_verts.ply", pcd) 
+        pcd.points = o3d.utility.Vector3dVector(points[idx].detach().cpu().numpy())
+
+        for i in range(16):
+            colors = point_weights[idx, :, i].unsqueeze(1).detach().cpu().numpy()
+            colors = np.concatenate([colors, colors, colors], axis=1)
+            pcd.colors = o3d.utility.Vector3dVector(colors)
+            o3d.io.write_point_cloud(f"debug/points_{i}.ply", pcd) 
+            
+        exit()
+        '''
+
         return point_weights  # B x T x K
 
 
@@ -174,3 +215,160 @@ class LEAPModel(BaseModule):
         self.inv_lbs.eval()
         self.fwd_lbs.eval()
         self.leap_occupancy_decoder.eval()
+
+
+class OurLEAPModel_StructureOnly(BaseModule):
+    def __init__(self,
+                 inv_lbs: INVLBS,
+                 fwd_lbs: FWDLBS,
+                 leap_occupancy_decoder: OurOccupancyDecoder_StructureOnly,
+                 option: None):
+        super(OurLEAPModel, self).__init__()
+
+        # NN modules
+        self.inv_lbs = inv_lbs
+        self.fwd_lbs = fwd_lbs
+        self.leap_occupancy_decoder = leap_occupancy_decoder
+        self.option = option
+
+    @classmethod
+    def from_cfg(cls, config):
+        leap_model = cls(
+            inv_lbs=INVLBS.load_from_file(config['inv_lbs_model_path']),
+            fwd_lbs=FWDLBS.load_from_file(config['fwd_lbs_model_path']),
+            leap_occupancy_decoder=OurOccupancyDecoder_StructureOnly.from_cfg(config))
+
+        return leap_model
+
+    @classmethod
+    def load_from_file(cls, file_path):
+        state_dict = cls.parse_pytorch_file(file_path)
+        config = state_dict['leap_model_config']
+        model_state_dict = state_dict['leap_model_model']
+
+        leap_model = cls(
+            inv_lbs=INVLBS.from_cfg(config['inv_lbs_model_config']),
+            fwd_lbs=FWDLBS.from_cfg(config['fwd_lbs_model_config']),
+            leap_occupancy_decoder=OurLEAPOccupancyDecoder_StructureOnly.from_cfg(config))
+
+        leap_model.load_state_dict(model_state_dict)
+        return leap_model
+
+    def to(self, **kwargs):
+        self.inv_lbs = self.inv_lbs.to(**kwargs)
+        self.fwd_lbs = self.fwd_lbs.to(**kwargs)
+        self.leap_occupancy_decoder = self.leap_occupancy_decoder.to(**kwargs)
+        return self
+
+    def eval(self):
+        self.inv_lbs.eval()
+        self.fwd_lbs.eval()
+        self.leap_occupancy_decoder.eval()
+
+class OurLEAPModel_StructureOnly_NoCycle(BaseModule):
+    def __init__(self,
+                 inv_lbs: INVLBS,
+                 fwd_lbs: FWDLBS,
+                 leap_occupancy_decoder: OurOccupancyDecoder_StructureOnly_NoCycle,
+                 option: None):
+        super(OurLEAPModel_StructureOnly_NoCycle, self).__init__()
+
+        # NN modules
+        self.inv_lbs = inv_lbs
+        self.fwd_lbs = fwd_lbs
+        self.leap_occupancy_decoder = leap_occupancy_decoder
+        self.option = option
+
+    @classmethod
+    def from_cfg(cls, config):
+        leap_model = cls(
+            inv_lbs=INVLBS.load_from_file(config['inv_lbs_model_path']),
+            fwd_lbs=FWDLBS.load_from_file(config['fwd_lbs_model_path']),
+            leap_occupancy_decoder=OurLEAPOccupancyDecoder_StructureOnly_NoCycle.from_cfg(config))
+
+        return leap_model
+
+    @classmethod
+    def load_from_file(cls, file_path):
+        state_dict = cls.parse_pytorch_file(file_path)
+        config = state_dict['leap_model_config']
+        model_state_dict = state_dict['leap_model_model']
+
+        leap_model = cls(
+            inv_lbs=INVLBS.from_cfg(config['inv_lbs_model_config']),
+            fwd_lbs=FWDLBS.from_cfg(config['fwd_lbs_model_config']),
+            leap_occupancy_decoder=OurLEAPOccupancyDecoder_StructureOnly_NoCycle.from_cfg(config))
+
+        leap_model.load_state_dict(model_state_dict)
+        return leap_model
+
+    def to(self, **kwargs):
+        self.inv_lbs = self.inv_lbs.to(**kwargs)
+        self.fwd_lbs = self.fwd_lbs.to(**kwargs)
+        self.leap_occupancy_decoder = self.leap_occupancy_decoder.to(**kwargs)
+        return self
+
+    def eval(self):
+        self.inv_lbs.eval()
+        self.fwd_lbs.eval()
+        self.leap_occupancy_decoder.eval()
+
+
+class OurLEAPModel_StructureOnly_NoCycle_ShapeNet(BaseModule):
+    def __init__(self,
+                 inv_lbs: INVLBS,
+                 fwd_lbs: FWDLBS,
+                 leap_occupancy_decoder: OurOccupancyDecoder_StructureOnly_NoCycle,
+                 shape_net: ShapeNet,
+                 option: None):
+        super(OurLEAPModel_StructureOnly_NoCycle_ShapeNet, self).__init__()
+
+        # NN modules
+        self.inv_lbs = inv_lbs
+        self.fwd_lbs = fwd_lbs
+        self.leap_occupancy_decoder = leap_occupancy_decoder
+        self.option = option
+
+        self.shape_net = shape_net
+
+    @classmethod
+    def from_cfg(cls, config):
+        leap_model = cls(
+            inv_lbs=INVLBS.load_from_file(config['inv_lbs_model_path']),
+            fwd_lbs=FWDLBS.load_from_file(config['fwd_lbs_model_path']),
+            leap_occupancy_decoder=OurOccupancyDecoder_StructureOnly_NoCycle.from_cfg(config),
+            shape_net=ShapeNet.from_cfg(config), # WARNING!
+            option=None
+            )
+
+        return leap_model
+
+    @classmethod
+    def load_from_file(cls, file_path):
+        state_dict = cls.parse_pytorch_file(file_path)
+        config = state_dict['leap_model_config']
+        model_state_dict = state_dict['leap_model_model']
+
+        leap_model = cls(
+            inv_lbs=INVLBS.from_cfg(config['inv_lbs_model_config']),
+            fwd_lbs=FWDLBS.from_cfg(config['fwd_lbs_model_config']),
+            leap_occupancy_decoder=OurOccupancyDecoder_StructureOnly_NoCycle.from_cfg(config),
+            shape_net=ShapeNet.from_cfg(config), # WARNING!,
+            option=None
+            )
+
+        leap_model.load_state_dict(model_state_dict)
+        return leap_model
+
+    def to(self, **kwargs):
+        self.inv_lbs = self.inv_lbs.to(**kwargs)
+        self.fwd_lbs = self.fwd_lbs.to(**kwargs)
+        self.leap_occupancy_decoder = self.leap_occupancy_decoder.to(**kwargs)
+        self.shape_net = self.shape_net.to(**kwargs)
+        return self
+
+    def eval(self):
+        self.inv_lbs.eval()
+        self.fwd_lbs.eval()
+        self.leap_occupancy_decoder.eval()
+        self.shape_net.eval()

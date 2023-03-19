@@ -63,9 +63,9 @@ class LEAPBodyModel(nn.Module):
         shape_dirs = smpl_dict['shapedirs'][:, :, :self.num_betas]
 
         self.v_template = torch.tensor(v_template, dtype=dtype)
-        self.shape_dirs = torch.tensor(shape_dirs, dtype=dtype)
+        self.shape_dirs = torch.tensor(np.array(shape_dirs), dtype=dtype)
         self.pose_dirs = torch.tensor(pose_dirs, dtype=dtype)
-        self.joint_regressor = torch.tensor(joint_regressor, dtype=dtype)
+        self.joint_regressor = torch.tensor(joint_regressor.toarray(), dtype=dtype)
         self.kintree_table = torch.tensor(kintree_table, dtype=torch.int32)
         self.weights = torch.tensor(weights, dtype=dtype)
 
@@ -314,7 +314,7 @@ class LEAPBodyModel(nn.Module):
         ext = osp.splitext(bm_path)[-1]
         if ext == '.npz':
             smpl_model = np.load(bm_path, allow_pickle=True)
-        elif ext == 'pkl':
+        elif ext == '.pkl':
             with open(bm_path, 'rb') as smpl_file:
                 smpl_model = pickle.load(smpl_file, encoding='latin1')
         else:

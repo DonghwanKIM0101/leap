@@ -141,6 +141,67 @@ class ONet(BaseModule):
         )
 
 
+class ONet_NoCycle(BaseModule):
+    def __init__(self, num_joints, point_feature_len, hidden_size, no_cycle=False):
+        super().__init__()
+
+        self.num_joints = num_joints
+        self.point_feature_len = point_feature_len
+        self.c_dim = point_feature_len + 1  # + 1 for the cycle-distance feature
+
+        self.no_cycle = no_cycle
+        hidden_size -= 1
+
+        self.fc_p = nn.Conv1d(3, hidden_size, (1,))
+        self.fc_0 = nn.Conv1d(hidden_size, hidden_size, (1,))
+        self.fc_1 = nn.Conv1d(hidden_size, hidden_size, (1,))
+        self.fc_2 = nn.Conv1d(hidden_size, hidden_size, (1,))
+        self.fc_3 = nn.Conv1d(hidden_size, hidden_size, (1,))
+        self.fc_4 = nn.Conv1d(hidden_size, hidden_size, (1,))
+
+        self.bn_0 = nn.BatchNorm1d(hidden_size)
+        self.bn_1 = nn.BatchNorm1d(hidden_size)
+        self.bn_2 = nn.BatchNorm1d(hidden_size)
+        self.bn_3 = nn.BatchNorm1d(hidden_size)
+        self.bn_4 = nn.BatchNorm1d(hidden_size)
+        self.bn_5 = nn.BatchNorm1d(hidden_size)
+
+        self.fc_out = nn.Conv1d(hidden_size, 1, (1,))
+
+        self.act = F.relu
+
+    def forward(self, can_points, local_point_feature, cycle_distance):
+        can_points = can_points.transpose(1, 2)
+        
+        local_cond_code = local_point_feature
+        local_cond_code = local_cond_code.transpose(1, 2)
+
+        net = self.fc_p(can_points)
+        net = self.act(self.bn_0(net))
+        net = self.fc_0(net)
+        net = self.act(self.bn_1(net))
+        net = self.fc_1(net)
+        net = self.act(self.bn_2(net))
+        net = self.fc_2(net)
+        net = self.act(self.bn_3(net))
+        net = self.fc_3(net)
+        net = self.act(self.bn_4(net))
+        net = self.fc_4(net)
+        net = self.act(self.bn_5(net))
+        out = self.fc_out(net)
+        out = out.squeeze(1)
+
+        return out
+
+    @classmethod
+    def from_cfg(cls, config):
+        return cls(
+            num_joints=config['num_joints'],
+            point_feature_len=config['point_feature_len'],
+            hidden_size=config['hidden_size'],
+        )
+
+
 class ShapeEncoder(nn.Module):
     def __init__(self, out_dim, hidden_size):
         super().__init__()
@@ -388,6 +449,152 @@ class LEAPOccupancyDecoder(BaseModule):
 
         if self.pose_encoder.get_out_dim() > 0:
             pose_code = self.pose_encoder(root_loc, fwd_transformation)
+
+        local_feature = self.local_feature_encoder(shape_code, structure_code, pose_code, point_weights)
+
+        occupancy = self.onet(can_points, local_feature, cycle_distance)
+
+        return occupancy
+
+
+class OurOccupancyDecoder_StructureOnly(BaseModule):
+    def __init__(self,
+                 #shape_encoder: ShapeEncoder,
+                 structure_encoder: StructureEncoder,
+                 #pose_encoder: PoseEncoder,
+                 local_feature_encoder: LocalFeatureEncoder,
+                 onet: ONet):
+        super().__init__()
+
+        #self.shape_encoder = shape_encoder
+        self.structure_encoder = structure_encoder
+        #self.pose_encoder = pose_encoder
+
+        self.local_feature_encoder = local_feature_encoder
+        self.onet = onet
+
+    @classmethod
+    def from_cfg(cls, config):
+        #shape_encoder = ShapeEncoder.from_cfg(deepcopy(config['shape_encoder']))
+
+        structure_encoder_config = deepcopy(config['structure_encoder'])
+        structure_encoder_config['parent_mapping'] = config['parent_mapping']
+        structure_encoder = StructureEncoder.from_cfg(structure_encoder_config)
+
+        #pose_encoder = PoseEncoder.from_cfg(deepcopy(config['pose_encoder']))
+
+        local_feature_encoder_config = deepcopy(config['local_feature_encoder'])
+        local_feature_encoder_config['num_joints'] = config['num_joints']
+        #z_dim = pose_encoder.get_out_dim() + shape_encoder.get_out_dim() + structure_encoder.get_out_dim()
+        z_dim = structure_encoder.get_out_dim()
+        local_feature_encoder_config['z_dim'] = z_dim
+        local_feature_encoder = LocalFeatureEncoder.from_cfg(local_feature_encoder_config)
+
+        onet_config = deepcopy(config['onet'])
+        onet_config['num_joints'] = config['num_joints']
+        onet_config['point_feature_len'] = local_feature_encoder.get_out_dim()
+        onet = ONet.from_cfg(onet_config)
+
+        #return cls(shape_encoder, structure_encoder, pose_encoder, local_feature_encoder, onet)
+        return cls(structure_encoder, local_feature_encoder, onet)
+
+    @classmethod
+    def load_from_file(cls, file_path):
+        state_dict = cls.parse_pytorch_file(file_path)
+        config = state_dict['leap_occupancy_decoder_config']
+        model_state_dict = state_dict['leap_occupancy_decoder_weights']
+        return cls.load(config, model_state_dict)
+
+    def forward(self,
+                can_points, point_weights, cycle_distance,
+                can_vert=None,  # for shape code
+                rot_mats=None, rel_joints=None,  # for structure code
+                root_loc=None, fwd_transformation=None):  # for pose code
+        shape_code, pose_code, structure_code = None, None, None
+
+        #if self.shape_encoder.get_out_dim() > 0:
+        #    shape_code = self.shape_encoder(can_vert)
+
+        if self.structure_encoder.get_out_dim() > 0:
+            structure_code = self.structure_encoder(rot_mats, rel_joints)
+
+        #if self.pose_encoder.get_out_dim() > 0:
+        #    pose_code = self.pose_encoder(root_loc, fwd_transformation)
+
+        shape_code = pose_code = None
+
+        local_feature = self.local_feature_encoder(shape_code, structure_code, pose_code, point_weights)
+
+        occupancy = self.onet(can_points, local_feature, cycle_distance)
+
+        return occupancy
+
+
+class OurOccupancyDecoder_StructureOnly_NoCycle(BaseModule):
+    def __init__(self,
+                 #shape_encoder: ShapeEncoder,
+                 structure_encoder: StructureEncoder,
+                 #pose_encoder: PoseEncoder,
+                 local_feature_encoder: LocalFeatureEncoder,
+                 onet: ONet):
+        super().__init__()
+
+        #self.shape_encoder = shape_encoder
+        self.structure_encoder = structure_encoder
+        #self.pose_encoder = pose_encoder
+
+        self.local_feature_encoder = local_feature_encoder
+        self.onet = onet
+
+    @classmethod
+    def from_cfg(cls, config):
+        #shape_encoder = ShapeEncoder.from_cfg(deepcopy(config['shape_encoder']))
+
+        structure_encoder_config = deepcopy(config['structure_encoder'])
+        structure_encoder_config['parent_mapping'] = config['parent_mapping']
+        structure_encoder = StructureEncoder.from_cfg(structure_encoder_config)
+
+        #pose_encoder = PoseEncoder.from_cfg(deepcopy(config['pose_encoder']))
+
+        local_feature_encoder_config = deepcopy(config['local_feature_encoder'])
+        local_feature_encoder_config['num_joints'] = config['num_joints']
+        #z_dim = pose_encoder.get_out_dim() + shape_encoder.get_out_dim() + structure_encoder.get_out_dim()
+        z_dim = structure_encoder.get_out_dim()
+        local_feature_encoder_config['z_dim'] = z_dim
+        local_feature_encoder = LocalFeatureEncoder.from_cfg(local_feature_encoder_config)
+
+        onet_config = deepcopy(config['onet'])
+        onet_config['num_joints'] = config['num_joints']
+        onet_config['point_feature_len'] = local_feature_encoder.get_out_dim()
+        onet = ONet_NoCycle.from_cfg(onet_config)
+
+        #return cls(shape_encoder, structure_encoder, pose_encoder, local_feature_encoder, onet)
+        return cls(structure_encoder, local_feature_encoder, onet)
+
+    @classmethod
+    def load_from_file(cls, file_path):
+        state_dict = cls.parse_pytorch_file(file_path)
+        config = state_dict['leap_occupancy_decoder_config']
+        model_state_dict = state_dict['leap_occupancy_decoder_weights']
+        return cls.load(config, model_state_dict)
+
+    def forward(self,
+                can_points, point_weights, cycle_distance=None,
+                can_vert=None,  # for shape code
+                rot_mats=None, rel_joints=None,  # for structure code
+                root_loc=None, fwd_transformation=None):  # for pose code
+        shape_code, pose_code, structure_code = None, None, None
+
+        #if self.shape_encoder.get_out_dim() > 0:
+        #    shape_code = self.shape_encoder(can_vert)
+
+        if self.structure_encoder.get_out_dim() > 0:
+            structure_code = self.structure_encoder(rot_mats, rel_joints)
+
+        #if self.pose_encoder.get_out_dim() > 0:
+        #    pose_code = self.pose_encoder(root_loc, fwd_transformation)
+
+        shape_code = pose_code = None
 
         local_feature = self.local_feature_encoder(shape_code, structure_code, pose_code, point_weights)
 

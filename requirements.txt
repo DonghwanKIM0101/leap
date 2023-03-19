@@ -1,4 +1,5 @@
 torch
+torchvision
 numpy
 trimesh
 PyYAML
@@ -6,6 +7,7 @@ scipy
 setuptools
 tqdm
 leap
+tensorboard
 tensorboardx
 cython
 scikit-image
@@ -14,3 +16,5 @@ torchgeometry
 pyrender
 setuptools
 opencv-python
+tinyobjloader==2.0.0rc7
+git+https://github.com/NVIDIAGameWorks/kaolin.git

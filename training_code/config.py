@@ -16,17 +16,37 @@ def load_config(path):
     with open(path, 'r') as f:
         cfg = yaml.safe_load(f)
 
-    # add additional attributes
-    bm_path = os.path.join(cfg['data']['bm_path'], 'neutral', 'model.npz')
-    model_type, num_joints = leap.LEAPBodyModel.get_num_joints(bm_path)
+    dataset_type = cfg['data']['dataset']
 
-    cfg['model']['num_joints'] = num_joints
-    cfg['model']['model_type'] = model_type
-    cfg['model']['parent_mapping'] = leap.LEAPBodyModel.get_parent_mapping(model_type)
-    if cfg['method'] == 'leap_model':
-        for key in ['inv_lbs_model_config', 'fwd_lbs_model_config']:
-            for attr in ['num_joints', 'model_type', 'parent_mapping']:
-                cfg['model'][key][attr] = cfg['model'][attr]
+    if dataset_type == 'amass': 
+        # add additional attributes
+        # bm_path = os.path.join(cfg['data']['bm_path'], 'neutral', 'model.npz')
+        bm_path = cfg['data']['bm_path']
+        model_type, num_joints = leap.LEAPBodyModel.get_num_joints(bm_path)
+
+        cfg['model']['num_joints'] = num_joints
+        cfg['model']['model_type'] = model_type
+        cfg['model']['parent_mapping'] = leap.LEAPBodyModel.get_parent_mapping(model_type)
+        if cfg['method'] == 'leap_model':
+            for key in ['inv_lbs_model_config', 'fwd_lbs_model_config']:
+                for attr in ['num_joints', 'model_type', 'parent_mapping']:
+                    cfg['model'][key][attr] = cfg['model'][attr]
+
+    elif dataset_type == 'humman':
+        # add additional attributes
+        bm_path = cfg['data']['bm_path']
+        model_type, num_joints = leap.LEAPBodyModel.get_num_joints(bm_path)
+        cfg['model']['num_joints'] = num_joints
+        cfg['model']['model_type'] = model_type
+        cfg['model']['parent_mapping'] = leap.LEAPBodyModel.get_parent_mapping(model_type)
+        if cfg['method'] == 'leap_model':
+            for key in ['inv_lbs_model_config', 'fwd_lbs_model_config']:
+                for attr in ['num_joints', 'model_type', 'parent_mapping']:
+                    cfg['model'][key][attr] = cfg['model'][attr]
+        elif cfg['method'] == '4d_model':
+            for key in ['inv_lbs_model_config', 'fwd_lbs_model_config']:
+                for attr in ['num_joints', 'model_type', 'parent_mapping']:
+                    cfg['model'][key][attr] = cfg['model'][attr]
 
     return cfg
 
@@ -42,13 +62,14 @@ def get_model(cfg):
     """
     method = cfg['method']
 
-    assert method in ['leap_model', 'inv_lbs', 'fwd_lbs'], \
+    assert method in ['leap_model', 'inv_lbs', 'fwd_lbs', '4d_model'], \
         'Not supported method type'
 
     model = {
         'leap_model': leap.LEAPModel,
         'inv_lbs': leap.INVLBS,
         'fwd_lbs': leap.FWDLBS,
+        '4d_model': leap.OurLEAPModel_StructureOnly_NoCycle_ShapeNet
     }[method].from_cfg(cfg['model'])
 
     return model.to(device=cfg['device'])
@@ -67,13 +88,14 @@ def get_trainer(model, optimizer, cfg):
     """
     method = cfg['method']
 
-    assert method in ['leap_model', 'inv_lbs', 'fwd_lbs'], \
+    assert method in ['leap_model', 'inv_lbs', 'fwd_lbs', '4d_model'], \
         'Not supported method type'
 
     trainer = {
         'leap_model': trainers.LEAPModelTrainer,
         'inv_lbs': trainers.INVLBSTrainer,
         'fwd_lbs': trainers.FWDLBSTrainer,
+        '4d_model': trainers.PAIFTrainer,
     }[method](model, optimizer, cfg)
 
     return trainer
@@ -92,8 +114,8 @@ def get_dataset(mode, cfg):
     method = cfg['method']
     dataset_type = cfg['data']['dataset']
 
-    assert method in ['leap_model', 'inv_lbs', 'fwd_lbs']
-    assert dataset_type in ['amass']
+    assert method in ['leap_model', 'inv_lbs', 'fwd_lbs', '4d_model']
+    assert dataset_type in ['amass', 'humman']
     assert mode in ['train', 'val', 'test']
 
     # Create dataset
@@ -102,6 +124,12 @@ def get_dataset(mode, cfg):
             'leap_model': datasets.AmassLEAPOccupancyDataset,
             'inv_lbs': datasets.AmassINVLBSDataset,
             'fwd_lbs': datasets.AmassFWDLBSDataset,
+        }[method]
+    elif dataset_type == 'humman':
+        dataset = {
+            '4d_model': datasets.HuMManSeqDataset,
+            'inv_lbs': datasets.HuMManINVLBSDataset,
+            'fwd_lbs': datasets.HuMManFWDLBSDataset,
         }[method]
     else:
         raise NotImplementedError(f'Not supported dataset type ({dataset_type})')

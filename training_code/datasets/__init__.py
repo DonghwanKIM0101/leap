@@ -4,8 +4,20 @@ from .amass import (
     AmassFWDLBSDataset
 )
 
+from .humman import (
+    HuMManLEAPOccupancyDataset,
+    HuMManINVLBSDataset,
+    HuMManFWDLBSDataset
+)
+
+from .humman_seq import HuMManSeqDataset
+
 __all__ = [
     AmassLEAPOccupancyDataset,
     AmassFWDLBSDataset,
-    AmassINVLBSDataset
+    AmassINVLBSDataset,
+    HuMManLEAPOccupancyDataset,
+    HuMManINVLBSDataset,
+    HuMManFWDLBSDataset,
+    HuMManSeqDataset,
 ]
