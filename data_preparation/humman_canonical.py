@@ -30,10 +30,11 @@ def main(args):
     joint_regressor = torch.tensor(joint_regressor.toarray(), dtype=torch.float32)
     shape_dirs = smpl_dict['shapedirs'][:, :, :num_betas]
     shape_dirs = torch.tensor(np.array(shape_dirs), dtype=torch.float32)
+    faces = smpl_dict['f']
 
 
     # pose to rot matrices
-    full_pose = [torch.tensor(np.zeros((b_size, 21, 3)), dtype=torch.float32, device='cpu')]
+    full_pose = [torch.tensor(np.zeros((b_size, 24, 3)), dtype=torch.float32, device='cpu')]
     full_pose = torch.cat(full_pose, dim=1)
 
     pose_rot_mat = torchgeometry.angle_axis_to_rotation_matrix(full_pose.view(-1, 3))[:, :3, :3]
@@ -57,10 +58,11 @@ def main(args):
     rel_joints[:, 1:] -= joints[:, parents[1:]]
 
     to_save = {
-        'can_vertices': can_vert,
-        'can_joints': can_joint_loc,
-        'pose_mat': pose_rot_mat,
-        'rel_joints': rel_joints,
+        'can_vertices': can_vert[0],
+        'can_faces': faces,
+        'can_joints': can_joint_loc[0],
+        'pose_mat': pose_rot_mat[0],
+        'rel_joints': rel_joints[0],
     }
 
     with open(join(args.dst_dataset_path, 'canonical.npz'), 'wb') as file:

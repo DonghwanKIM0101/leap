@@ -9,6 +9,13 @@ from leap.modules import LEAPModel, INVLBS, FWDLBS
 from leap.tools.libmesh import check_mesh_contains
 
 
+def xyz_to_xyz1(xyz):
+    """ Convert xyz vectors from [BS, ..., 3] to [BS, ..., 4] for matrix multiplication
+    """
+    ones = torch.ones([*xyz.shape[:-1], 1], device=xyz.device)
+    return torch.cat([xyz, ones], dim=-1)
+
+    
 class BaseTrainer:
     """ Base trainers class.
 
@@ -106,41 +113,39 @@ class PAIFTrainer(BaseTrainer):
 
 
     def forward_pass(self, data):
+        img = data['img'].to(device=self.device)
+        B = img.shape[0]
 
-        img, pose_dict = data
-        img = img.to(device=self.device)
-
-        can_vert = pose_dict['can_vertices'].to(device=self.device)
+        can_vertices = data['can_vertices'].to(device=self.device)
+        can_faces = data['can_faces'].to(device=self.device)
+        can_joint_root = data['can_joint_root'].to(device=self.device)[0]
+        orig_can_points = data['can_points'].to(device=self.device)
         
-        can_points = pose_dict['can_points'].to(device=self.device)
+        # gt_clothed_vertices = data['gt_clothed_vertices'].to(device=self.device)
+        # gt_clothed_faces = data['gt_clothed_faces'][0][:data['lengths'][0]]
 
-        can_rel_joints = pose_dict['can_rel_joints'].to(device=self.device)
-        can_pose = pose_dict['can_pose'].to(device=self.device)
-        fwd_transformation = pose_dict['fwd_transformation'].to(device=self.device)
-        root_rot_mat = pose_dict['root_rot_mat'].to(device=self.device)
-        camera_params = pose_dict['camera_params']
+        can_rel_joints = data['can_rel_joints'].to(device=self.device)
+        rel_joint_root = data['rel_joints'][:, :1, :, 0].to(device=self.device)
+        can_pose = data['can_pose'].to(device=self.device)
+        fwd_transformation = data['fwd_transformation'].to(device=self.device)
+        root_rot_mat = data['root_rot_mat'].to(device=self.device)
+        root_xyz = data['root_xyz'].to(device=self.device)
+        camera_params = {}
+        camera_params['R'] = data['R'].to(device=self.device)
+        camera_params['T'] = data['T'].to(device=self.device)
+        camera_params['K'] = data['K'].to(device=self.device)
 
-        gt_clothed_verts = pose_dict['gt_clothed_verts'].to(device=self.device)
-        gt_clothed_faces = pose_dict['gt_clothed_faces'].to(device=self.device)
-        
-        # can_points = torch.cat((can_vert, can_points), 1)
-
-        for key in camera_params.keys():
-            if key not in ['img_path']:
-                camera_params[key] = camera_params[key].to(device=self.device)
+        can_points = torch.cat((can_vertices, orig_can_points), 1)
 
         with torch.no_grad():
-            self.fwd_points_weights = self.model.fwd_lbs(can_points, can_vert)
+            self.fwd_points_weights = self.model.fwd_lbs(can_points, can_vertices)
 
-            for idx in range(can_points.shape[0]):
-                can_root = pose_dict['can_joint_root'][idx].cuda()
-                can_points[idx] -= can_root
+            posed_points = self._can2posed_points(can_points, self.fwd_points_weights, fwd_transformation)
 
-            posed_points = self._can2posed_points(can_points, self.fwd_point_weights, fwd_transformation)
-        
         self.model.shape_net(img)
 
-        posed_points, self.pred_dist = self.model.shape_net.query(posed_points, can_points, self.fwd_point_weights, root_rot_mat, camera_params, fixed=True, scale=self.scale)
+        posed_points -= can_joint_root
+        posed_points, self.pred_dist = self.model.shape_net.query(posed_points, can_points, root_xyz, rel_joint_root, self.fwd_points_weights, root_rot_mat, camera_params, fixed=True, scale=self.scale)
 
         self.posed_points = posed_points
 
@@ -151,21 +156,15 @@ class PAIFTrainer(BaseTrainer):
         inv_occ_points = occ_points + self.pred_dist
 
         inv_occ_points = torch.bmm(inv_occ_points.float(), camera_params['R']) 
-        inv_occ_points = torch.bmm(xyz_to_xyz1(inv_occ_points), root_rot_mat.transpose(1,2))[:, :, :3]
-
-        inv_occ_points = self._posed2can_points(inv_occ_points, self.fwd_point_weights, fwd_transformation)
-        
-        for idx in range(inv_occ_points.shape[0]):
-            can_root = pose_dict['can_joint_root'][idx].cuda()
-            inv_occ_points[idx] += can_root
+        inv_occ_points = torch.bmm(inv_occ_points, root_rot_mat.transpose(1,2))[:, :, :3]
+        posed_points += can_joint_root
+        inv_occ_points = self._posed2can_points(inv_occ_points, self.fwd_points_weights, fwd_transformation)
 
         occupancy = torch.sigmoid(self.model.leap_occupancy_decoder(
-            can_points=inv_occ_points, point_weights=self.fwd_point_weights, rot_mats=can_pose, rel_joints=can_rel_joints))
+            can_points=inv_occ_points, point_weights=self.fwd_points_weights, rot_mats=can_pose, rel_joints=can_rel_joints))
         
         gt_occ = torch.zeros((inv_occ_points.shape[0], inv_occ_points.shape[1])).to(device=self.device)
-        can_clothed_verts = self._posed2can_points(gt_clothed_verts[0], self.fwd_point_weights, fwd_transformation)
-
-        can_mesh = trimesh.Trimesh(can_clothed_verts.detach().cpu().numpy(), gt_clothed_faces[0].detach().cpu().numpy(), process=False)
+        can_mesh = trimesh.Trimesh(can_vertices[0].detach().cpu().numpy(), can_faces[0].detach().cpu().numpy(), process=False)
 
         for b_idx in range(inv_occ_points.shape[0]):
             occ_points_curr = inv_occ_points[b_idx].clone()
@@ -195,6 +194,9 @@ class PAIFTrainer(BaseTrainer):
         loss_dict = {
             'occ_loss': self.loss(self.occ, self.gt_occ)
         }
+        loss_dict['total_loss'] = loss_dict['occ_loss']
+        
+        return loss_dict
 
     
     @staticmethod

@@ -1,14 +1,17 @@
 import argparse
 from glob import glob
 import json
+import os
 from os.path import basename, join, splitext
 from pathlib import Path
 from tqdm import tqdm
+from scipy.spatial.transform import Rotation
 
 import numpy as np
 import torch
 
 from leap.leap_body_model import LEAPBodyModel
+from training_code.datasets.mesh_utils import *
 
 
 @torch.no_grad()
@@ -33,9 +36,13 @@ def main(args):
                 betas = smpl_params['betas']
                 transl = smpl_params['transl']
 
-                mesh_path = join(args.src_dataset_path, seq_dir, 'textured_meshes', f"{frame_format}.obj")
+                mesh_path = join(args.src_dataset_path, seq_dir, 'reduced_meshes', f"{frame_format}.obj")
                 image_path = join(args.src_dataset_path, seq_dir, 'kinect_color', 'kinect_000', f"{frame_format}.png")
                 mask_path = join(args.src_dataset_path, seq_dir, 'kinect_mask', 'kinect_000', f"{frame_format}.png")
+
+                if (not os.path.isfile(mesh_path)):
+                    continue
+
                 camera_path = join(args.src_dataset_path, seq_dir, 'cameras.json')
                 with open(camera_path, 'r') as f:
                     cameras = json.load(f)
@@ -44,22 +51,31 @@ def main(args):
 
                 b_size = 1
 
+                # print(body_pose.shape)
                 leap_body_model = LEAPBodyModel(bm_path=bm_path, num_betas=betas.shape[0])
                 leap_body_model.set_parameters(
                     betas=torch.Tensor(betas).view(1,-1),
-                    pose_body=torch.Tensor(body_pose[3:66]).view(1,-1)  # 21 joints
+                    # pose_body=torch.Tensor(body_pose[3:66]).view(1,-1)  # 21 joints
+                    pose_body=torch.Tensor(body_pose[:63]).view(1,-1)  # 21 joints
                 )
                 leap_body_model.forward_parametric_model()
+
+                verts, faces = obj_loader(mesh_path)
+
+                rotation_matrix = Rotation.from_rotvec(global_orient).as_matrix()
+                # rotation_matrix = np.concatenate((rotation_matrix, np.expand_dims(transl, axis=1)),1)
+
 
                 to_save = {
                     'can_vertices': leap_body_model.can_vert,
                     'posed_vertices': leap_body_model.posed_vert,
                     'pose_mat': leap_body_model.pose_rot_mat,
-                    # 'root_rot_mat': leap_body_model.pose_rot_mat[:, 0, :, :],
+                    'root_rot_mat': [rotation_matrix],
+                    'root_xyz': [transl],
+                    'clothed_vertices': [verts],
+                    'clothed_faces': [faces],
                     'rel_joints': leap_body_model.rel_joints,
                     'fwd_transformation': leap_body_model.fwd_transformation,
-                    # 'seq_dir': f'{seq_dir}',
-                    # 'frame_idx': f'{frame_format}',
                     'mesh_path': [mesh_path],
                     'image_path': [image_path],
                     'mask_path': [mask_path],

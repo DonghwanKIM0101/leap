@@ -11,6 +11,24 @@ import config
 import checkpoints
 import utils
 
+from datasets.humman_seq import TrainSampler
+
+
+def collate_fn_padd(batch):
+    ## get sequence lengths
+    lengths = torch.tensor([ t['gt_clothed_faces'].shape[0] for t in batch ])
+    max_length = lengths.max()
+
+    for idx, t in enumerate(batch):
+        if (max_length != lengths[idx]):
+            batch[idx]['gt_clothed_faces'] = torch.nn.functional.pad(t['gt_clothed_faces'], [0, 0, 0, max_length-lengths[idx]], mode='constant', value=0.0)
+
+    result = {'lengths': lengths}
+    for key in batch[0].keys():
+        result[key] = torch.stack([torch.Tensor(data[key]) for data in batch]).contiguous()
+
+    return result
+
 
 def main(cfg, num_workers):
     # Shortened
@@ -29,16 +47,31 @@ def main(cfg, num_workers):
     train_dataset = config.get_dataset('train', cfg)
     val_dataset = config.get_dataset('val', cfg)
 
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        shuffle=True)
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        shuffle=False)
+    if (cfg['method'] == '4d_model'):
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            # shuffle=True,
+            sampler=TrainSampler(train_dataset),)
+            # collate_fn=collate_fn_padd)
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            shuffle=False,)
+            # collate_fn=collate_fn_padd)
+    else:
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            shuffle=True)
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            shuffle=False)
 
     # Model
     model = config.get_model(cfg)

@@ -48,8 +48,8 @@ model:  # hyper parameters for the occupancy model
     pn_dim: 100  # PointNet feature dimensionality
 
 training:
-  out_dir: ./trained_models/4d_model
-  batch_size: 30
+  out_dir: /hdd1/leap/trained_models/4d_model
+  batch_size: 17
 
   model_selection_metric: iou
   model_selection_mode: maximize

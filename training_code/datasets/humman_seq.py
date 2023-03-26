@@ -1,10 +1,13 @@
 import os
-import glob
+from glob import glob
 import json
+import pickle
 import os.path as osp
+from tqdm import tqdm
 
 import numpy as np
 import cv2
+from PIL import Image
 from scipy.spatial import cKDTree as KDTree
 from torch.utils import data
 from trimesh import Trimesh
@@ -17,9 +20,42 @@ import torchvision.transforms as transforms
 from training_code.datasets.mesh_utils import *
 
 
+class TrainSampler():
+    """
+    Arguments:
+    data_source (Dataset): dataset to sample from
+    """
+
+    def __init__(self, data_source, seq_len=17):
+        self.data_source = data_source
+        self.seq_len = seq_len
+
+    @property
+    def num_samples(self):
+        return len(self.data_source)
+
+    def __iter__(self):
+        n = len(self.data_source)
+        seed_n_list = torch.randperm(n).tolist()
+
+        idx_list = []
+        for seed_n in tqdm(seed_n_list):
+
+            if self.data_source.return_seq(seed_n) != self.data_source.return_seq(seed_n+self.seq_len):
+                continue
+            
+            for i in range(self.seq_len):
+                idx_list.append(seed_n + i)
+
+        return iter(idx_list)
+
+    def __len__(self):
+        return self.num_samples
+
+
 class HuMManSeqDataset(data.Dataset):
     """ HuMMan dataset class for occupancy training. """
-    def __init__(sef, cfg, split):
+    def __init__(self, cfg, split):
         """ Initialization of the the 3D shape dataset.
 
         Args:
@@ -37,9 +73,11 @@ class HuMManSeqDataset(data.Dataset):
 
         with open(cfg['bm_path'], 'rb') as smpl_file:
             self.faces = pickle.load(smpl_file, encoding='latin1')['f']
+        self.faces.dtype = np.int32
 
         canonical_pose = np.load(osp.join(self.dataset_folder, 'canonical.npz'))
         self.can_vertices = canonical_pose['can_vertices'].astype(np.float32)
+        self.can_faces = canonical_pose['can_faces'].astype(int)
         self.can_rel_joints = canonical_pose['rel_joints'].astype(np.float32)
         self.can_pose = canonical_pose['pose_mat'].astype(np.float32)
         self.can_joints = canonical_pose['can_joints'].astype(np.float32)
@@ -58,14 +96,19 @@ class HuMManSeqDataset(data.Dataset):
         # Get all models
         self.data_list = self._load_data_files()
 
-        self.normalize_img = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+        self.normalize_img = transforms.Compose([
+            transforms.Resize(256),
+            transforms.ToTensor(),
+            transforms.CenterCrop(256),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                                   std=[0.229, 0.224, 0.225])
+        ])
 
     def _load_data_files(self):
         return sorted(list(glob(osp.join(self.dataset_folder, self.split, "*.npz"))))
 
     def __len__(self):
-        return len(self.data)
+        return len(self.data_list)
 
     def sample_points(self, mesh, n_points, prefix='', compute_occupancy=False, frame=None):
         # Get extents of model.
@@ -100,13 +143,23 @@ class HuMManSeqDataset(data.Dataset):
 
         to_ret = {
             f'{prefix}points': query_points,
-            f'{prefix}loc': loc,
-            f'{prefix}scale': np.asarray(scale),
+            # f'{prefix}loc': loc,
+            # f'{prefix}scale': np.asarray(scale),
         }
         if compute_occupancy:
             to_ret[f'{prefix}occ'] = check_mesh_contains(mesh, query_points).astype(np.float32)
 
         return to_ret
+
+    def return_seq(self, idx):
+        try:
+            data_path = str(self.data_list[idx])
+            seq_name = osp.split(data_path)[-1][:3]
+        except:
+            seq_name = 'n/a'
+
+        return seq_name
+
 
     def __getitem__(self, idx):
         """ Returns an item of the dataset.
@@ -115,44 +168,51 @@ class HuMManSeqDataset(data.Dataset):
             idx (int): ID of datasets point
         """
 
-        data_dict = np.load(self.data[idx])
+        data_dict = np.load(self.data_list[idx], allow_pickle=True)
         pose_dict = {}
 
-        color = cv2.imread(data_dict['image_path'])
-        mask = cv2.imread(data_dict['mask_path'], cv2.IMREAD_GRAYSCALE)
+        color = cv2.imread(str(data_dict['image_path']))
+        mask = cv2.imread(str(data_dict['mask_path']), cv2.IMREAD_GRAYSCALE)
         color[mask==0] = 0 # gt segmentation
-        img_tensor = torch.tensor(cv2.cvtColor(color, cv2.COLOR_BGR2RGB), dtype=torch.float32) / 255
-        img_tensor = img_tensor.permute(2, 0, 1)
-        img_tensor = self.normalize_img(img_tensor)
+        color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
+        img_tensor = self.normalize_img(Image.fromarray(color))
 
-        camera_params = data_dict['camera_params']
+        camera_params = data_dict['camera_params'].item()
+        K, R, T = camera_params['K'], camera_params['R'], camera_params['T']
+        K = torch.as_tensor(K).float()
+        R = torch.as_tensor(R).float()
+        T = torch.as_tensor(T).float()
 
-        verts, faces = obj_loader(data_dict['mesh_path'])
-        clothed_mesh = Trimesh(verts, faces, process=False)
-        pose_dict.update(self.sample_points(clothed_mesh, self.n_points_posed, compute_occupancy=False))
+        # Image is resized and crop.
+        K[0,2] -= 420
+        K *= 256/1080
+        K[2,2] = 1
+
+        # verts, faces = obj_loader(str(data_dict['mesh_path']))
+        # clothed_mesh = Trimesh(verts, faces, process=False)
+        # pose_dict.update(self.sample_points(clothed_mesh, self.n_points_posed, compute_occupancy=False))
         can_mesh = Trimesh(self.can_vertices, self.faces, process=False)
-        pose_dict.update(self.sample_points(can_mesh, self.n_points_can, compute_occupancy=False))
+        pose_dict.update(self.sample_points(can_mesh, self.n_points_can, prefix='can_', compute_occupancy=False))
 
-        data_path = self.data_dict[idx]
-        smpl_params = np.load(data_path)
-        global_orient = smpl_params['global_orient']
-        body_pose = smpl_params['body_pose']
-        betas = smpl_params['betas']
-        transl = smpl_params['transl']
-
+        pose_dict['img'] = img_tensor
         pose_dict['fwd_transformation'] = data_dict['fwd_transformation']
 
         pose_dict['can_vertices'] = self.can_vertices
-        pose_dict['can_joints'] = self.can_joints
-        pose_dict['can_joint_root'] = self.can_joint_root
+        pose_dict['can_faces'] = self.can_faces
+        # pose_dict['can_joints'] = self.can_joints
+        pose_dict['can_joint_root'] = torch.Tensor(self.can_joint_root)
         pose_dict['can_rel_joints'] = self.can_rel_joints
         pose_dict['can_pose'] = self.can_pose
-        pose_dict['root_rot_mat'] = data_dict['root_rot_mat'][0]
+        pose_dict['root_rot_mat'] = torch.Tensor(data_dict['root_rot_mat']).float()
+        pose_dict['root_xyz'] = torch.Tensor(data_dict['root_xyz']).float()
 
-        pose_dict['gt_clothed_verts'] = verts
-        pose_dict['gt_clothed_faces'] = faces
+        # pose_dict['gt_clothed_vertices'] = torch.as_tensor(data_dict['clothed_vertices']).float()
+        # pose_dict['gt_clothed_faces'] = torch.as_tensor(data_dict['clothed_faces']).float()
+        pose_dict['rel_joints'] = data_dict['rel_joints']
 
-        pose_dict['camera_params'] = camera_params
+        pose_dict['R'] = R
+        pose_dict['T'] = T
+        pose_dict['K'] = K
 
-        return img_tensor, pose_dict
+        return pose_dict
 

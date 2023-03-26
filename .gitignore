@@ -3,3 +3,4 @@ leap.egg-info
 training_code/trained_models
 data_preparation/tmp_data
 __pycache__
+debug
