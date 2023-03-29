@@ -13,6 +13,13 @@ import torch
 from leap.leap_body_model import LEAPBodyModel
 from training_code.datasets.mesh_utils import *
 
+def nearest_vertices(smpl_vertices, cloth_vertices):
+    cloth_vertices = torch.Tensor(cloth_vertices).unsqueeze(0).to(device='cuda')
+    distances = torch.cdist(smpl_vertices, cloth_vertices)
+    _, min_index = torch.min(distances, dim=1)
+    idx1 = torch.arange(smpl_vertices.shape[0]).view(-1, 1)
+    return cloth_vertices[idx1, min_index]
+
 
 @torch.no_grad()
 def main(args):
@@ -32,8 +39,8 @@ def main(args):
                 smpl_params = np.load(join(seq_path, f"{frame_format}.npz"))
                 bm_path = join(args.bm_dir_path, 'SMPL_NEUTRAL.pkl')
                 global_orient = smpl_params['global_orient']
-                body_pose = smpl_params['body_pose']
-                betas = smpl_params['betas']
+                body_pose = torch.Tensor(smpl_params['body_pose']).to(device='cuda')
+                betas = torch.Tensor(smpl_params['betas']).to(device='cuda')
                 transl = smpl_params['transl']
 
                 mesh_path = join(args.src_dataset_path, seq_dir, 'reduced_meshes', f"{frame_format}.obj")
@@ -52,11 +59,11 @@ def main(args):
                 b_size = 1
 
                 # print(body_pose.shape)
-                leap_body_model = LEAPBodyModel(bm_path=bm_path, num_betas=betas.shape[0])
+                leap_body_model = LEAPBodyModel(bm_path=bm_path, num_betas=betas.shape[0], device='cuda')
                 leap_body_model.set_parameters(
-                    betas=torch.Tensor(betas).view(1,-1),
+                    betas=betas.view(1,-1),
                     # pose_body=torch.Tensor(body_pose[3:66]).view(1,-1)  # 21 joints
-                    pose_body=torch.Tensor(body_pose[:63]).view(1,-1)  # 21 joints
+                    pose_body=body_pose[:63].view(1,-1)  # 21 joints
                 )
                 leap_body_model.forward_parametric_model()
 
@@ -74,6 +81,7 @@ def main(args):
                     'root_xyz': [transl],
                     'clothed_vertices': [verts],
                     'clothed_faces': [faces],
+                    'pseudo_gt_corr': nearest_vertices(leap_body_model.posed_vert, verts),
                     'rel_joints': leap_body_model.rel_joints,
                     'fwd_transformation': leap_body_model.fwd_transformation,
                     'mesh_path': [mesh_path],

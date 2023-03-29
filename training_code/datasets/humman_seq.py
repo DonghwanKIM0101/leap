@@ -206,6 +206,7 @@ class HuMManSeqDataset(data.Dataset):
         pose_dict['root_rot_mat'] = torch.Tensor(data_dict['root_rot_mat']).float()
         pose_dict['root_xyz'] = torch.Tensor(data_dict['root_xyz']).float()
 
+        pose_dict['pseudo_gt_corr'] = data_dict['pseudo_gt_corr'].astype(np.float32)
         # pose_dict['gt_clothed_vertices'] = torch.as_tensor(data_dict['clothed_vertices']).float()
         # pose_dict['gt_clothed_faces'] = torch.as_tensor(data_dict['clothed_faces']).float()
         pose_dict['rel_joints'] = data_dict['rel_joints']

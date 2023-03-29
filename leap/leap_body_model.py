@@ -149,7 +149,7 @@ class LEAPBodyModel(nn.Module):
         # pose_hand
         if pose_hand is None:
             if self.model_type in ['smpl']:
-                pose_hand = torch.tensor(np.zeros((self.batch_size, 1 * 3 * 2)), dtype=self.dtype)
+                pose_hand = torch.tensor(np.zeros((self.batch_size, 1 * 3 * 2)), dtype=self.dtype, device=self.device)
             elif self.model_type in ['smplh', 'smplx']:
                 pose_hand = torch.tensor(np.zeros((self.batch_size, 15 * 3 * 2)), dtype=self.dtype)
             elif self.model_type in ['mano']:

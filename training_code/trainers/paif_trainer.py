@@ -91,12 +91,16 @@ class PAIFTrainer(BaseTrainer):
         super().__init__(model, optimizer, cfg)
 
         self._eval_lbs_mode()
-        self.loss = torch.nn.MSELoss()
+        self.occ_loss = torch.nn.MSELoss()
+        self.corr_loss = torch.nn.MSELoss()
 
         self.scale = 1
         self.occ = None
         self.gt_occ = None
         self.refined_pts = None
+        self.corr_pts = None
+        self.gt_corr_pts = None
+        self.num_corr_pts = 0
 
 
     def _eval_lbs_mode(self):
@@ -117,6 +121,7 @@ class PAIFTrainer(BaseTrainer):
         B = img.shape[0]
 
         can_vertices = data['can_vertices'].to(device=self.device)
+        self.num_corr_pts = can_vertices.shape[1]
         can_faces = data['can_faces'].to(device=self.device)
         can_joint_root = data['can_joint_root'].to(device=self.device)[0]
         orig_can_points = data['can_points'].to(device=self.device)
@@ -174,6 +179,8 @@ class PAIFTrainer(BaseTrainer):
         
         self.occ = occupancy
         self.gt_occ = gt_occ
+        self.corr_pts = self.refined_pts[:, :self.num_corr_pts, :]
+        self.gt_corr_pts = data['pseudo_gt_corr'].to(device=self.device)
 
     
     @torch.no_grad()
@@ -182,7 +189,8 @@ class PAIFTrainer(BaseTrainer):
         self.forward_pass(data)
 
         return {
-            'iou': self.compute_iou(self.occ >= 0.5, self.gt_occ >= 0.5).mean()
+            'iou': self.compute_iou(self.occ >= 0.5, self.gt_occ >= 0.5).mean(),
+            'corr': self.corr_loss(self.corr_pts, self.gt_corr_pts)
         }
 
     
@@ -192,9 +200,10 @@ class PAIFTrainer(BaseTrainer):
         self.forward_pass(data)
 
         loss_dict = {
-            'occ_loss': self.loss(self.occ, self.gt_occ)
+            'occ_loss': self.occ_loss(self.occ, self.gt_occ),
+            'corr_loss': self.corr_loss(self.corr_pts, self.gt_corr_pts)
         }
-        loss_dict['total_loss'] = loss_dict['occ_loss']
+        loss_dict['total_loss'] = 10 * loss_dict['corr_loss'] + loss_dict['occ_loss']
         
         return loss_dict
 
