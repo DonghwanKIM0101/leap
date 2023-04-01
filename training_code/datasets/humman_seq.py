@@ -43,6 +43,9 @@ class TrainSampler():
 
             if self.data_source.return_seq(seed_n) != self.data_source.return_seq(seed_n+self.seq_len):
                 continue
+
+            if self.data_source.return_cam(seed_n) != self.data_source.return_cam(seed_n+self.seq_len):
+                continue
             
             for i in range(self.seq_len):
                 idx_list.append(seed_n + i)
@@ -51,6 +54,50 @@ class TrainSampler():
 
     def __len__(self):
         return self.num_samples
+
+
+class TestSampler():
+    """
+    Arguments:
+    data_source (Dataset): dataset to sample from
+    """
+
+    def __init__(self, data_source, seq_len=17, seq_num=2000):
+        self.data_source = data_source
+        self.seq_len = seq_len
+        self.seq_num = seq_num
+
+        self.n_samples = self.seq_len * self.seq_num
+
+    @property
+    def num_samples(self):
+        return self.n_samples
+
+    def __iter__(self):
+
+        torch.manual_seed(0)
+
+        n = len(self.data_source)
+        seed_n_list = torch.randperm(n).tolist()
+
+        idx_list = []
+        for seed_n in tqdm(seed_n_list):
+
+            if self.data_source.return_seq(seed_n) != self.data_source.return_seq(seed_n+self.seq_len):
+                continue
+
+            if self.data_source.return_cam(seed_n) != self.data_source.return_cam(seed_n+self.seq_len):
+                continue
+            
+            for i in range(self.seq_len):
+                idx_list.append(seed_n + i)
+
+            if len(idx_list) > self.n_samples: 
+                break
+        return iter(idx_list)
+
+    def __len__(self):
+        return self.n_samples
 
 
 class HuMManSeqDataset(data.Dataset):
@@ -105,7 +152,12 @@ class HuMManSeqDataset(data.Dataset):
         ])
 
     def _load_data_files(self):
-        return sorted(list(glob(osp.join(self.dataset_folder, self.split, "*.npz"))))
+        data_list = []
+        for seq_path in glob(osp.join(self.dataset_folder, self.split, '*')):
+            for cam_idx in range(10):
+                data_list += sorted(list(glob(osp.join(self.dataset_folder, self.split, seq_path, 'kinect_%03d' % cam_idx, "*.npz"))))
+
+        return data_list
 
     def __len__(self):
         return len(self.data_list)
@@ -154,12 +206,23 @@ class HuMManSeqDataset(data.Dataset):
     def return_seq(self, idx):
         try:
             data_path = str(self.data_list[idx])
-            seq_name = osp.split(data_path)[-1][:3]
+            sub_dir, _ = osp.split(data_path)
+            sub_dir, _ = osp.split(data_path)
+            seq_name = osp.split(sub_dir)[-1]
         except:
             seq_name = 'n/a'
 
         return seq_name
 
+    def return_cam(self, idx):
+        try:
+            data_path = str(self.data_list[idx])
+            sub_dir, _ = osp.split(data_path)
+            cam_name = osp.split(sub_dir)[-1]
+        except:
+            cam_name = 'n/a'
+
+        return cam_name
 
     def __getitem__(self, idx):
         """ Returns an item of the dataset.
@@ -168,16 +231,19 @@ class HuMManSeqDataset(data.Dataset):
             idx (int): ID of datasets point
         """
 
-        data_dict = np.load(self.data_list[idx], allow_pickle=True)
+        sub_dir, file_name = osp.split(self.data_list[idx])
+        sub_dir, _ = osp.split(sub_dir)
+        data_dict = np.load(osp.join(sub_dir, file_name), allow_pickle=True)
+        data_dict_multiview = np.load(self.data_list[idx], allow_pickle=True)
         pose_dict = {}
 
-        color = cv2.imread(str(data_dict['image_path']))
-        mask = cv2.imread(str(data_dict['mask_path']), cv2.IMREAD_GRAYSCALE)
+        color = cv2.imread(str(data_dict_multiview['image_path']))
+        mask = cv2.imread(str(data_dict_multiview['mask_path']), cv2.IMREAD_GRAYSCALE)
         color[mask==0] = 0 # gt segmentation
         color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
         img_tensor = self.normalize_img(Image.fromarray(color))
 
-        camera_params = data_dict['camera_params'].item()
+        camera_params = data_dict_multiview['camera_params'].item()
         K, R, T = camera_params['K'], camera_params['R'], camera_params['T']
         K = torch.as_tensor(K).float()
         R = torch.as_tensor(R).float()
@@ -188,28 +254,33 @@ class HuMManSeqDataset(data.Dataset):
         K *= 256/1080
         K[2,2] = 1
 
-        # verts, faces = obj_loader(str(data_dict['mesh_path']))
-        # clothed_mesh = Trimesh(verts, faces, process=False)
-        # pose_dict.update(self.sample_points(clothed_mesh, self.n_points_posed, compute_occupancy=False))
         can_mesh = Trimesh(self.can_vertices, self.faces, process=False)
         pose_dict.update(self.sample_points(can_mesh, self.n_points_can, prefix='can_', compute_occupancy=False))
 
+        joints_root = data_dict['rel_joints'][0]
+        root_rot_mat = data_dict['root_rot_mat']
+        root_xyz = data_dict['root_xyz']
+        pseudo_gt_corr = data_dict['pseudo_gt_corr'].T
+        pseudo_gt_corr = pseudo_gt_corr - joints_root
+        pseudo_gt_corr = root_rot_mat @ pseudo_gt_corr
+        pseudo_gt_corr = R.cpu().numpy() @ pseudo_gt_corr
+        pseudo_gt_corr = pseudo_gt_corr.T
+
         pose_dict['img'] = img_tensor
+        pose_dict['out_dir'] = str(data_dict_multiview['out_dir'])
+        pose_dict['out_file'] = str(data_dict_multiview['out_file'])
         pose_dict['fwd_transformation'] = data_dict['fwd_transformation']
 
         pose_dict['can_vertices'] = self.can_vertices
         pose_dict['can_faces'] = self.can_faces
-        # pose_dict['can_joints'] = self.can_joints
         pose_dict['can_joint_root'] = torch.Tensor(self.can_joint_root)
         pose_dict['can_rel_joints'] = self.can_rel_joints
         pose_dict['can_pose'] = self.can_pose
-        pose_dict['root_rot_mat'] = torch.Tensor(data_dict['root_rot_mat']).float()
-        pose_dict['root_xyz'] = torch.Tensor(data_dict['root_xyz']).float()
+        pose_dict['root_rot_mat'] = torch.Tensor(root_rot_mat).float()
+        pose_dict['root_xyz'] = torch.Tensor(root_xyz).float()
 
-        pose_dict['pseudo_gt_corr'] = data_dict['pseudo_gt_corr'].astype(np.float32)
-        # pose_dict['gt_clothed_vertices'] = torch.as_tensor(data_dict['clothed_vertices']).float()
-        # pose_dict['gt_clothed_faces'] = torch.as_tensor(data_dict['clothed_faces']).float()
-        pose_dict['rel_joints'] = data_dict['rel_joints']
+        pose_dict['pseudo_gt_corr'] = torch.Tensor(pseudo_gt_corr).float()
+        pose_dict['joints_root'] = torch.Tensor(joints_root.T).float()
 
         pose_dict['R'] = R
         pose_dict['T'] = T

@@ -6,6 +6,7 @@ from os.path import basename, join, splitext
 from pathlib import Path
 from tqdm import tqdm
 from scipy.spatial.transform import Rotation
+import open3d as o3d
 
 import numpy as np
 import torch
@@ -44,8 +45,6 @@ def main(args):
                 transl = smpl_params['transl']
 
                 mesh_path = join(args.src_dataset_path, seq_dir, 'reduced_meshes', f"{frame_format}.obj")
-                image_path = join(args.src_dataset_path, seq_dir, 'kinect_color', 'kinect_000', f"{frame_format}.png")
-                mask_path = join(args.src_dataset_path, seq_dir, 'kinect_mask', 'kinect_000', f"{frame_format}.png")
 
                 if (not os.path.isfile(mesh_path)):
                     continue
@@ -53,12 +52,9 @@ def main(args):
                 camera_path = join(args.src_dataset_path, seq_dir, 'cameras.json')
                 with open(camera_path, 'r') as f:
                     cameras = json.load(f)
-                camera_params = cameras['kinect_color_000']  # e.g., Kinect ID = 0
-                K, R, T = camera_params['K'], camera_params['R'], camera_params['T']
 
                 b_size = 1
 
-                # print(body_pose.shape)
                 leap_body_model = LEAPBodyModel(bm_path=bm_path, num_betas=betas.shape[0], device='cuda')
                 leap_body_model.set_parameters(
                     betas=betas.view(1,-1),
@@ -70,36 +66,75 @@ def main(args):
                 verts, faces = obj_loader(mesh_path)
 
                 rotation_matrix = Rotation.from_rotvec(global_orient).as_matrix()
-                # rotation_matrix = np.concatenate((rotation_matrix, np.expand_dims(transl, axis=1)),1)
 
+                joints_root = leap_body_model.rel_joints[0].cpu().numpy()[0]
+                
+                verts = verts.T
+                verts = verts - joints_root
+                verts = verts - np.expand_dims(transl, 1)
+                verts = np.matmul(rotation_matrix.T, verts)
+                verts = verts + joints_root
+                verts = verts.T
+
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(leap_body_model.can_vert[0].cpu().numpy()) 
+                o3d.io.write_point_cloud('debug/can_mesh.ply' , pcd)
+
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(leap_body_model.posed_vert[0].cpu().numpy()) 
+                o3d.io.write_point_cloud('debug/pose_mesh.ply' , pcd)
+
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(verts) 
+                o3d.io.write_point_cloud('debug/psuedo_mesh.ply' , pcd)
+
+
+                exit()
 
                 to_save = {
-                    'can_vertices': leap_body_model.can_vert,
-                    'posed_vertices': leap_body_model.posed_vert,
-                    'pose_mat': leap_body_model.pose_rot_mat,
-                    'root_rot_mat': [rotation_matrix],
-                    'root_xyz': [transl],
-                    'clothed_vertices': [verts],
-                    'clothed_faces': [faces],
-                    'pseudo_gt_corr': nearest_vertices(leap_body_model.posed_vert, verts),
-                    'rel_joints': leap_body_model.rel_joints,
-                    'fwd_transformation': leap_body_model.fwd_transformation,
-                    'mesh_path': [mesh_path],
-                    'image_path': [image_path],
-                    'mask_path': [mask_path],
+                    'can_vertices': leap_body_model.can_vert[0],
+                    'posed_vertices': leap_body_model.posed_vert[0],
+                    'pose_mat': leap_body_model.pose_rot_mat[0],
+                    'root_rot_mat': rotation_matrix,
+                    'root_xyz': transl,
+                    'clothed_vertices': verts,
+                    'clothed_faces': faces,
+                    'pseudo_gt_corr': nearest_vertices(leap_body_model.posed_vert, verts)[0],
+                    'rel_joints': leap_body_model.rel_joints[0],
+                    'fwd_transformation': leap_body_model.fwd_transformation[0],
+                    'mesh_path': mesh_path,
                 }
-                to_save['camera_params'] = {}
-                to_save['camera_params']['K'] = K
-                to_save['camera_params']['R'] = R
-                to_save['camera_params']['T'] = T
-                to_save['camera_params'] = [to_save['camera_params']]
 
-                dir_path = join(args.dst_dataset_path, split)
+                dir_path = join(args.dst_dataset_path, split, seq_dir)
                 Path(dir_path).mkdir(parents=True, exist_ok=True)
-                # print(f'Saving:\t{dir_path}')
-                for b_ind in range(b_size):
-                    with open(join(dir_path, '%03d_%03d.npz'%(seq_idx, frame_idx)), 'wb') as file:
-                        np.savez(file, **{key: to_np(val[b_ind]) for key, val in to_save.items()})
+                with open(join(dir_path, f"{frame_format}.npz"), 'wb') as file:
+                    np.savez(file, **{key: to_np(val) for key, val in to_save.items()})
+
+                for cam_idx in range(10):
+                    cam_dir = 'kinect_%03d' % cam_idx
+                    image_path = join(args.src_dataset_path, seq_dir, 'kinect_color', cam_dir, f"{frame_format}.png")
+                    mask_path = join(args.src_dataset_path, seq_dir, 'kinect_mask', cam_dir, f"{frame_format}.png")
+
+                    sub_dir = join(seq_dir, cam_dir)
+
+                    camera_params = cameras[f'kinect_color_00{cam_idx}']
+                    K, R, T = camera_params['K'], camera_params['R'], camera_params['T']
+
+                    to_save_multiview = {
+                        'image_path': image_path,
+                        'mask_path': mask_path,
+                        'out_dir': sub_dir,
+                        'out_file': frame_format
+                    }
+                    to_save_multiview['camera_params'] = {}
+                    to_save_multiview['camera_params']['K'] = K
+                    to_save_multiview['camera_params']['R'] = R
+                    to_save_multiview['camera_params']['T'] = T
+
+                    dir_path = join(args.dst_dataset_path, split, seq_dir, cam_dir)
+                    Path(dir_path).mkdir(parents=True, exist_ok=True)
+                    with open(join(dir_path, f"{frame_format}.npz"), 'wb') as file:
+                        np.savez(file, **{key: to_np(val) for key, val in to_save_multiview.items()})
 
 
 def to_np(variable):

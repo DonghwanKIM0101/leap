@@ -33,6 +33,7 @@ def collate_fn_padd(batch):
 def main(cfg, num_workers):
     # Shortened
     out_dir = cfg['training']['out_dir']
+    mesh_out_dir = os.path.join(out_dir, 'mesh')
     batch_size = cfg['training']['batch_size']
     backup_every = cfg['training']['backup_every']
     utils.save_config(os.path.join(out_dir, 'config.yml'), cfg)
@@ -42,6 +43,7 @@ def main(cfg, num_workers):
 
     # Output directory
     utils.cond_mkdir(out_dir)
+    utils.cond_mkdir(mesh_out_dir)
 
     # Dataset
     train_dataset = config.get_dataset('train', cfg)

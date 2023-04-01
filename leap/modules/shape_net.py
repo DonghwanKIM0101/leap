@@ -11,7 +11,7 @@ from .HGFilters import HGFilter
 
 
 import sys
-sys.path.insert(0, '/home/leap/leap/modules') 
+sys.path.insert(0, '/home/donghwan/leap/leap/modules') 
 import geometry
 
 def xyz_to_xyz1(xyz):
@@ -23,7 +23,7 @@ def xyz_to_xyz1(xyz):
 
 def pts_to_img_coord(p, root_xyz, root_joint, root_rot_mat, camera_params):
 
-    img_p = torch.bmm(p, root_rot_mat)[:, :, :3]
+    img_p = torch.bmm(p, root_rot_mat.transpose(1,2))[:, :, :3]
 
     trans_img_p = torch.bmm(img_p.float(), camera_params['R'].transpose(1,2)) 
 
@@ -42,7 +42,7 @@ def pts_to_img_coord(p, root_xyz, root_joint, root_rot_mat, camera_params):
     import cv2
     import torchvision.transforms as transforms
     trans = transforms.ToPILImage()
-    for i in range(16):
+    for i in range(15):
         img = np.array(trans(image[i].detach().cpu()))
         sub_img_p = proj_img_p[i] 
 
@@ -154,8 +154,6 @@ class ShapeNet(NetworkBase):
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
         x = x.transpose(1,2)
-
-        x = trans_img_p - x
 
         return trans_img_p, x
 

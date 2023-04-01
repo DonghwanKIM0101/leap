@@ -52,10 +52,8 @@ class HuMManDataset(data.Dataset):
 
         # list files
         data_list = []
-
-        for data in os.listdir(os.path.join(self.dataset_folder, self.mode)):
-            data_path = os.path.join(self.dataset_folder, self.mode, data)
-            data_list.append(data_path)
+        for seq_dir in glob(osp.join(self.dataset_folder, self.split)):
+            data_list += sorted(list(glob(osp.join(self.dataset_folder, self.split, seq_dir, "*.npz"))))
 
         return data_list
 

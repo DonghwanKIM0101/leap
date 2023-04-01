@@ -1,9 +1,18 @@
 from collections import defaultdict
 
+import os
 import numpy as np
 import trimesh
 import torch
 import tqdm
+import open3d as o3d
+
+import sys
+sys.path.insert(0, '/home/donghwan/occupancy_networks')
+from im2mesh.utils import libmcubes
+from im2mesh.utils.libmise import MISE
+from im2mesh.utils.libsimplify import simplify_mesh
+from im2mesh.common import make_3d_grid
 
 from leap.modules import LEAPModel, INVLBS, FWDLBS
 from leap.tools.libmesh import check_mesh_contains
@@ -98,9 +107,103 @@ class PAIFTrainer(BaseTrainer):
         self.occ = None
         self.gt_occ = None
         self.refined_pts = None
+        self.posed_points = None
+        self.vis_pts = None
         self.corr_pts = None
         self.gt_corr_pts = None
         self.num_corr_pts = 0
+
+
+    @torch.no_grad()
+    def visualize(self, vis_loader, mesh_dir='mesh'):
+        self.model.eval()
+
+        eval_list = defaultdict(list)
+
+        for idx, data in enumerate(tqdm.tqdm(vis_loader)):
+
+            #export_point_cloud(data[1]['right']['gt_mano_joints'][0].cpu().numpy(), 'joints')
+            #exit(0)
+
+            if idx == 0:
+                can_mesh = self.generate_can_mesh(data)
+                can_mesh = simplify_mesh(can_mesh, 2048, 5.)
+
+                #can_mesh = self.can_mesh # WARNING
+
+                can_mesh.export(os.path.join(mesh_dir, 'can_mesh.ply'))
+                can_vertices = torch.Tensor(can_mesh.vertices).unsqueeze(0).to(device=self.device)
+                can_faces = can_mesh.faces
+
+            data['can_points'] = can_vertices.repeat_interleave(15, 0)
+
+            self.forward_pass(data)
+
+            eval_step_dict = {
+                'iou': self.compute_iou(self.occ >= 0.5, self.gt_occ >= 0.5).mean(),
+                'corr': self.corr_loss(self.corr_pts, self.gt_corr_pts),
+                'corr_before_shape': self.corr_loss(self.posed_points, self.gt_corr_pts)
+                }
+            for k, v in eval_step_dict.items():
+                eval_list[k].append(v.item())
+
+
+            posed_vertices = self.vis_pts
+            camera_params = {}
+            camera_params['R'] = data['R'].to(device=self.device)
+            camera_params['T'] = data['T'].to(device=self.device)
+            posed_vertices = torch.bmm(posed_vertices.float(), camera_params['R'])
+            posed_vertices += data['root_xyz'].to(device=self.device).unsqueeze(1)
+            posed_vertices += data['joints_root'].to(device=self.device)
+            posed_vertices = torch.bmm(posed_vertices.float(), camera_params['R'].transpose(1,2))
+            posed_vertices += camera_params['T'].double().unsqueeze(1)
+
+
+            for b_idx in range(15):
+
+                out_dir = data['out_dir'][b_idx] 
+                out_fname = data['out_file'][b_idx]
+
+                posed_vertex = posed_vertices[b_idx].detach().cpu().numpy()
+                posed_mesh = trimesh.Trimesh(posed_vertex, can_faces, process=False)
+
+                trimesh.repair.fix_normals(posed_mesh)
+
+                if not os.path.exists(os.path.join(mesh_dir, out_dir)):
+                    os.system('mkdir -p ' + os.path.join(mesh_dir, out_dir))
+                
+                posed_mesh.export(os.path.join(mesh_dir, out_dir, f'{out_fname}.ply'))
+
+                norm_posed_vertices = self.vis_pts[b_idx].detach().cpu().numpy()
+                norm_posed_mesh = trimesh.Trimesh(norm_posed_vertices, can_faces, process=False)
+                norm_posed_mesh.export(os.path.join(mesh_dir, out_dir, f'{out_fname}_norm.ply'))
+
+                # gt_posed_vertices = self.gt_corr_pts[b_idx].detach().cpu().numpy()
+                # gt_posed_faces = data['can_faces'][b_idx].detach().cpu().numpy()
+                # gt_posed_mesh = trimesh.Trimesh(gt_posed_vertices, gt_posed_faces, process=False)
+                # gt_posed_mesh.export(os.path.join(mesh_dir, out_dir, f'{out_fname}_gt.ply'))
+
+                posed_pts_name = os.path.join(mesh_dir, out_dir, f'{out_fname}_before_shape.ply')
+                posed_points = self.posed_points[b_idx].detach().cpu().numpy()
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(posed_points) 
+                o3d.io.write_point_cloud(posed_pts_name , pcd)
+
+                shaped_pts_name = os.path.join(mesh_dir, out_dir, f'{out_fname}_shape.ply')
+                shaped_points = self.shaped_points[b_idx].detach().cpu().numpy()
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(shaped_points) 
+                o3d.io.write_point_cloud(shaped_pts_name , pcd)
+
+                gt_pts_name = os.path.join(mesh_dir, out_dir, f'{out_fname}_gt_pts.ply')
+                gt_posed_pts = self.gt_corr_pts[b_idx].detach().cpu().numpy()
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(gt_posed_pts) 
+                o3d.io.write_point_cloud(gt_pts_name , pcd)
+
+        eval_dict = {k: np.mean(v) for k, v in eval_list.items()}
+        exit()
+        return eval_dict
 
 
     def _eval_lbs_mode(self):
@@ -116,7 +219,7 @@ class PAIFTrainer(BaseTrainer):
         self._eval_lbs_mode()
 
 
-    def forward_pass(self, data):
+    def forward_pass(self, data, input_can_points=None):
         img = data['img'].to(device=self.device)
         B = img.shape[0]
 
@@ -124,13 +227,19 @@ class PAIFTrainer(BaseTrainer):
         self.num_corr_pts = can_vertices.shape[1]
         can_faces = data['can_faces'].to(device=self.device)
         can_joint_root = data['can_joint_root'].to(device=self.device)[0]
-        orig_can_points = data['can_points'].to(device=self.device)
-        
+
+        if input_can_points is None:
+            orig_can_points = data['can_points'].to(device=self.device)
+            can_eval = False
+        else:
+            orig_can_points = input_can_points
+            can_eval = True
+
         # gt_clothed_vertices = data['gt_clothed_vertices'].to(device=self.device)
         # gt_clothed_faces = data['gt_clothed_faces'][0][:data['lengths'][0]]
 
         can_rel_joints = data['can_rel_joints'].to(device=self.device)
-        rel_joint_root = data['rel_joints'][:, :1, :, 0].to(device=self.device)
+        rel_joint_root = data['joints_root'].to(device=self.device)
         can_pose = data['can_pose'].to(device=self.device)
         fwd_transformation = data['fwd_transformation'].to(device=self.device)
         root_rot_mat = data['root_rot_mat'].to(device=self.device)
@@ -150,20 +259,21 @@ class PAIFTrainer(BaseTrainer):
         self.model.shape_net(img)
 
         posed_points -= can_joint_root
-        posed_points, self.pred_dist = self.model.shape_net.query(posed_points, can_points, root_xyz, rel_joint_root, self.fwd_points_weights, root_rot_mat, camera_params, fixed=True, scale=self.scale)
+        self.posed_points, self.pred_dist = self.model.shape_net.query(posed_points, can_points, root_xyz, rel_joint_root, self.fwd_points_weights, root_rot_mat, camera_params, fixed=True, scale=self.scale)
 
-        self.posed_points = posed_points
-
-        self.refined_pts = -self.pred_dist + posed_points
+        self.refined_pts = -self.pred_dist + self.posed_points
 
         occ_points = self.refined_pts
 
-        inv_occ_points = occ_points + self.pred_dist
+        if can_eval:
+            inv_occ_points = can_points
+        else:
+            inv_occ_points = occ_points + self.pred_dist
 
-        inv_occ_points = torch.bmm(inv_occ_points.float(), camera_params['R']) 
-        inv_occ_points = torch.bmm(inv_occ_points, root_rot_mat.transpose(1,2))[:, :, :3]
-        posed_points += can_joint_root
-        inv_occ_points = self._posed2can_points(inv_occ_points, self.fwd_points_weights, fwd_transformation)
+            inv_occ_points = torch.bmm(inv_occ_points.float(), camera_params['R']) 
+            inv_occ_points = torch.bmm(inv_occ_points, root_rot_mat)[:, :, :3]
+            posed_points += can_joint_root
+            inv_occ_points = self._posed2can_points(inv_occ_points, self.fwd_points_weights, fwd_transformation)
 
         occupancy = torch.sigmoid(self.model.leap_occupancy_decoder(
             can_points=inv_occ_points, point_weights=self.fwd_points_weights, rot_mats=can_pose, rel_joints=can_rel_joints))
@@ -177,10 +287,13 @@ class PAIFTrainer(BaseTrainer):
             gt_occ_curr = check_mesh_contains(can_mesh, occ_points_curr).astype(np.float32)
             gt_occ[b_idx] = torch.Tensor(gt_occ_curr)
         
-        self.occ = occupancy
-        self.gt_occ = gt_occ
+        self.occ = occupancy[:, self.num_corr_pts:]
+        self.gt_occ = gt_occ[:, self.num_corr_pts:]
         self.corr_pts = self.refined_pts[:, :self.num_corr_pts, :]
         self.gt_corr_pts = data['pseudo_gt_corr'].to(device=self.device)
+        self.vis_pts = self.refined_pts[:, self.num_corr_pts:, :]
+        self.shaped_points = self.refined_pts[:, :self.num_corr_pts, :]
+        self.posed_points = self.posed_points[:, :self.num_corr_pts, :]
 
     
     @torch.no_grad()
@@ -190,7 +303,8 @@ class PAIFTrainer(BaseTrainer):
 
         return {
             'iou': self.compute_iou(self.occ >= 0.5, self.gt_occ >= 0.5).mean(),
-            'corr': self.corr_loss(self.corr_pts, self.gt_corr_pts)
+            'corr': self.corr_loss(self.corr_pts, self.gt_corr_pts),
+            'corr_before_shape': self.corr_loss(self.posed_points, self.gt_corr_pts)
         }
 
     
@@ -201,7 +315,8 @@ class PAIFTrainer(BaseTrainer):
 
         loss_dict = {
             'occ_loss': self.occ_loss(self.occ, self.gt_occ),
-            'corr_loss': self.corr_loss(self.corr_pts, self.gt_corr_pts)
+            'corr_loss': self.corr_loss(self.corr_pts, self.gt_corr_pts),
+            'corr_loss_before_shape': self.corr_loss(self.posed_points, self.gt_corr_pts)
         }
         loss_dict['total_loss'] = 10 * loss_dict['corr_loss'] + loss_dict['occ_loss']
         
@@ -281,3 +396,92 @@ class PAIFTrainer(BaseTrainer):
         can_points = torch.bmm(back_trans, points)[:, :3, 0].view(B, T, 3)
 
         return can_points
+
+
+    @torch.no_grad()
+    def eval_points(self, data, pts, pts_batch_size=1000000):
+        p_split = torch.split(pts, pts_batch_size)
+        occ_hats = []
+
+        for pi in p_split:
+            pi = pi.unsqueeze(0).to(self.device)
+            pi = pi.repeat_interleave(15, 0)
+
+            self.forward_pass(data, input_can_points=pi)
+            occ_hat = self.occ[0]
+
+            occ_hats.append(occ_hat.squeeze(0).detach().cpu())
+
+        occ_hat = torch.cat(occ_hats, dim=0)
+
+        return occ_hat
+
+
+    @torch.no_grad()
+    def extract_mesh(self, occ_hat, threshold=0.5, padding=3):
+
+        n_x, n_y, n_z = occ_hat.shape
+        box_size = 0.1 + padding
+
+        occ_hat_padded = np.pad(
+            occ_hat, 1, 'constant', constant_values=-1e6)
+
+        batch_size = 1
+        shape = occ_hat.shape
+
+        #voxels_out = (occ_hat >= threshold)
+        #vis.visualize_voxels(
+        #    voxels_out, os.path.join('debug', f'vox.png'))
+
+        vertices, triangles = libmcubes.marching_cubes(
+            occ_hat_padded, threshold)
+
+        vertices -= 0.5
+        vertices -= 1
+
+        vertices /= np.array([n_x-1, n_y-1, n_z-1])
+        vertices = box_size * (vertices - 0.5)
+
+        mesh = trimesh.Trimesh(vertices, triangles,
+                               process=False)
+
+        return mesh
+  
+
+    @torch.no_grad()
+    def generate_can_mesh(self, data, resolution0=32, upsampling_steps=2, threshold=0.5, padding=3):
+
+        box_size = 0.1 + padding
+
+        mesh_extractor = MISE(
+            resolution0, upsampling_steps, threshold)
+
+        points = mesh_extractor.query()
+
+        if upsampling_steps == 0:
+            nx = resolution0
+            pointsf = box_size * make_3d_grid(
+                    (-0.5,)*3, (0.5,)*3, (nx,)*3)
+            values = self.eval_points(data, pointsf).cpu().numpy()
+            value_grid = values.reshape(nx, nx, nx)
+
+        else:
+            while points.shape[0] != 0:
+                pointsf = torch.FloatTensor(points).to(self.device)
+
+                pointsf = pointsf / mesh_extractor.resolution
+                pointsf = box_size * (pointsf - 0.5)
+
+                values = self.eval_points(
+                    data, pointsf).cpu().numpy()
+
+                values = values.astype(np.float64)
+                mesh_extractor.update(points, values)
+                points = mesh_extractor.query()
+
+            value_grid = mesh_extractor.to_dense()
+
+        # Extract mesh
+        mesh = self.extract_mesh(value_grid)
+
+        return mesh
