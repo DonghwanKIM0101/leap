@@ -231,6 +231,7 @@ class PAIFTrainer(BaseTrainer):
         if input_can_points is None:
             orig_can_points = data['can_points'].to(device=self.device)
             can_eval = False
+            gt_occ = data['can_occ'].to(device=self.device)
         else:
             orig_can_points = input_can_points
             can_eval = True
@@ -278,17 +279,20 @@ class PAIFTrainer(BaseTrainer):
         occupancy = torch.sigmoid(self.model.leap_occupancy_decoder(
             can_points=inv_occ_points, point_weights=self.fwd_points_weights, rot_mats=can_pose, rel_joints=can_rel_joints))
         
-        gt_occ = torch.zeros((inv_occ_points.shape[0], inv_occ_points.shape[1])).to(device=self.device)
-        can_mesh = trimesh.Trimesh(can_vertices[0].detach().cpu().numpy(), can_faces[0].detach().cpu().numpy(), process=False)
+        if (can_eval):
+            gt_occ = torch.zeros((inv_occ_points.shape[0], inv_occ_points.shape[1])).to(device=self.device)
+            can_mesh = trimesh.Trimesh(can_vertices[0].detach().cpu().numpy(), can_faces[0].detach().cpu().numpy(), process=False)
 
-        for b_idx in range(inv_occ_points.shape[0]):
-            occ_points_curr = inv_occ_points[b_idx].clone()
-            occ_points_curr = occ_points_curr.detach().cpu().numpy()
-            gt_occ_curr = check_mesh_contains(can_mesh, occ_points_curr).astype(np.float32)
-            gt_occ[b_idx] = torch.Tensor(gt_occ_curr)
+            for b_idx in range(inv_occ_points.shape[0]):
+                occ_points_curr = inv_occ_points[b_idx].clone()
+                occ_points_curr = occ_points_curr.detach().cpu().numpy()
+                gt_occ_curr = check_mesh_contains(can_mesh, occ_points_curr).astype(np.float32)
+                gt_occ[b_idx] = torch.Tensor(gt_occ_curr)
+            
+            gt_occ = gt_occ[:, self.num_corr_pts:]
         
         self.occ = occupancy[:, self.num_corr_pts:]
-        self.gt_occ = gt_occ[:, self.num_corr_pts:]
+        self.gt_occ = gt_occ
         self.corr_pts = self.refined_pts[:, :self.num_corr_pts, :]
         self.gt_corr_pts = data['pseudo_gt_corr'].to(device=self.device)
         self.vis_pts = self.refined_pts[:, self.num_corr_pts:, :]
@@ -399,7 +403,7 @@ class PAIFTrainer(BaseTrainer):
 
 
     @torch.no_grad()
-    def eval_points(self, data, pts, pts_batch_size=10000):
+    def eval_points(self, data, pts, pts_batch_size=20000):
         p_split = torch.split(pts, pts_batch_size)
         occ_hats = []
 
@@ -449,7 +453,7 @@ class PAIFTrainer(BaseTrainer):
   
 
     @torch.no_grad()
-    def generate_can_mesh(self, data, resolution0=64, upsampling_steps=3, threshold=0.5, padding=4):
+    def generate_can_mesh(self, data, resolution0=256, upsampling_steps=0, threshold=0.5, padding=4):
 
         box_size = 0.1 + padding
 

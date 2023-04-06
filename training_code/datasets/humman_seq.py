@@ -255,7 +255,7 @@ class HuMManSeqDataset(data.Dataset):
         K[2,2] = 1
 
         can_mesh = Trimesh(self.can_vertices, self.faces, process=False)
-        pose_dict.update(self.sample_points(can_mesh, self.n_points_can, prefix='can_', compute_occupancy=False))
+        pose_dict.update(self.sample_points(can_mesh, self.n_points_can, prefix='can_', compute_occupancy=True))
 
         joints_root = data_dict['rel_joints'][0]
         root_rot_mat = data_dict['root_rot_mat']
