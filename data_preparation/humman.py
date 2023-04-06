@@ -17,7 +17,7 @@ from training_code.datasets.mesh_utils import *
 def nearest_vertices(smpl_vertices, cloth_vertices):
     cloth_vertices = torch.Tensor(cloth_vertices).unsqueeze(0).to(device='cuda')
     distances = torch.cdist(smpl_vertices, cloth_vertices)
-    _, min_index = torch.min(distances, dim=1)
+    _, min_index = torch.min(distances, dim=2)
     idx1 = torch.arange(smpl_vertices.shape[0]).view(-1, 1)
     return cloth_vertices[idx1, min_index]
 
@@ -44,7 +44,7 @@ def main(args):
                 betas = torch.Tensor(smpl_params['betas']).to(device='cuda')
                 transl = smpl_params['transl']
 
-                mesh_path = join(args.src_dataset_path, seq_dir, 'reduced_meshes', f"{frame_format}.obj")
+                mesh_path = join(args.src_dataset_path, seq_dir, 'tight_meshes', f"{frame_format}.obj")
 
                 if (not os.path.isfile(mesh_path)):
                     continue
@@ -76,20 +76,19 @@ def main(args):
                 verts = verts + joints_root
                 verts = verts.T
 
-                pcd = o3d.geometry.PointCloud()
-                pcd.points = o3d.utility.Vector3dVector(leap_body_model.can_vert[0].cpu().numpy()) 
-                o3d.io.write_point_cloud('debug/can_mesh.ply' , pcd)
+                # pcd = o3d.geometry.PointCloud()
+                # pcd.points = o3d.utility.Vector3dVector(leap_body_model.can_vert[0].cpu().numpy()) 
+                # o3d.io.write_point_cloud('debug/can_mesh.ply' , pcd)
 
-                pcd = o3d.geometry.PointCloud()
-                pcd.points = o3d.utility.Vector3dVector(leap_body_model.posed_vert[0].cpu().numpy()) 
-                o3d.io.write_point_cloud('debug/pose_mesh.ply' , pcd)
+                # pcd = o3d.geometry.PointCloud()
+                # pcd.points = o3d.utility.Vector3dVector(leap_body_model.posed_vert[0].cpu().numpy()) 
+                # o3d.io.write_point_cloud('debug/pose_mesh.ply' , pcd)
 
-                pcd = o3d.geometry.PointCloud()
-                pcd.points = o3d.utility.Vector3dVector(verts) 
-                o3d.io.write_point_cloud('debug/psuedo_mesh.ply' , pcd)
+                # pcd = o3d.geometry.PointCloud()
+                # pcd.points = o3d.utility.Vector3dVector(verts) 
+                # o3d.io.write_point_cloud('debug/psuedo_mesh.ply' , pcd)
 
-
-                exit()
+                # exit()
 
                 to_save = {
                     'can_vertices': leap_body_model.can_vert[0],

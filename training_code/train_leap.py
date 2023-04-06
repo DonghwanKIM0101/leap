@@ -89,7 +89,8 @@ def main(cfg, num_workers):
     tb_logger = tensorboardX.SummaryWriter(os.path.join(out_dir, 'logs'))
     ckp = checkpoints.CheckpointIO(out_dir, model, optimizer, cfg)
     try:
-        load_dict = ckp.load('model_best.pt')
+        # load_dict = ckp.load('model_best.pt')
+        load_dict = ckp.load('model_latest.pt')
         logger.info('Model loaded')
     except FileExistsError:
         logger.info('Model NOT loaded')
@@ -125,6 +126,7 @@ def main(cfg, num_workers):
             if backup_every > 0 and (it % backup_every) == 0:
                 logger.info('Backup checkpoint')
                 ckp.save(f'model_{it:d}.pt', epoch_it=epoch_it, it=it, loss_val_best=metric_val_best)
+                ckp.save(f'model_latest.pt', epoch_it=epoch_it, it=it, loss_val_best=metric_val_best)
 
             # Run validation
             if validate_every > 0 and (it % validate_every) == 0:

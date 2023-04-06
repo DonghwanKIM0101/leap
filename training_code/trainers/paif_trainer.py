@@ -272,7 +272,7 @@ class PAIFTrainer(BaseTrainer):
 
             inv_occ_points = torch.bmm(inv_occ_points.float(), camera_params['R']) 
             inv_occ_points = torch.bmm(inv_occ_points, root_rot_mat)[:, :, :3]
-            posed_points += can_joint_root
+            inv_occ_points += can_joint_root
             inv_occ_points = self._posed2can_points(inv_occ_points, self.fwd_points_weights, fwd_transformation)
 
         occupancy = torch.sigmoid(self.model.leap_occupancy_decoder(
@@ -399,7 +399,7 @@ class PAIFTrainer(BaseTrainer):
 
 
     @torch.no_grad()
-    def eval_points(self, data, pts, pts_batch_size=1000000):
+    def eval_points(self, data, pts, pts_batch_size=10000):
         p_split = torch.split(pts, pts_batch_size)
         occ_hats = []
 
@@ -418,7 +418,7 @@ class PAIFTrainer(BaseTrainer):
 
 
     @torch.no_grad()
-    def extract_mesh(self, occ_hat, threshold=0.5, padding=3):
+    def extract_mesh(self, occ_hat, threshold=0.5, padding=4):
 
         n_x, n_y, n_z = occ_hat.shape
         box_size = 0.1 + padding
@@ -449,7 +449,7 @@ class PAIFTrainer(BaseTrainer):
   
 
     @torch.no_grad()
-    def generate_can_mesh(self, data, resolution0=32, upsampling_steps=2, threshold=0.5, padding=3):
+    def generate_can_mesh(self, data, resolution0=64, upsampling_steps=3, threshold=0.5, padding=4):
 
         box_size = 0.1 + padding
 
