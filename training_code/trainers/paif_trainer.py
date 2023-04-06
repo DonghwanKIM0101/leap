@@ -266,25 +266,15 @@ class PAIFTrainer(BaseTrainer):
 
         occ_points = self.refined_pts
 
-        if can_eval:
-            inv_occ_points = can_points
-        else:
-            inv_occ_points = occ_points + self.pred_dist
-
-            inv_occ_points = torch.bmm(inv_occ_points.float(), camera_params['R']) 
-            inv_occ_points = torch.bmm(inv_occ_points, root_rot_mat)[:, :, :3]
-            inv_occ_points += can_joint_root
-            inv_occ_points = self._posed2can_points(inv_occ_points, self.fwd_points_weights, fwd_transformation)
-
         occupancy = torch.sigmoid(self.model.leap_occupancy_decoder(
-            can_points=inv_occ_points, point_weights=self.fwd_points_weights, rot_mats=can_pose, rel_joints=can_rel_joints))
+            can_points=can_points, point_weights=self.fwd_points_weights, rot_mats=can_pose, rel_joints=can_rel_joints))
         
         if (can_eval):
-            gt_occ = torch.zeros((inv_occ_points.shape[0], inv_occ_points.shape[1])).to(device=self.device)
+            gt_occ = torch.zeros((can_points.shape[0], can_points.shape[1])).to(device=self.device)
             can_mesh = trimesh.Trimesh(can_vertices[0].detach().cpu().numpy(), can_faces[0].detach().cpu().numpy(), process=False)
 
-            for b_idx in range(inv_occ_points.shape[0]):
-                occ_points_curr = inv_occ_points[b_idx].clone()
+            for b_idx in range(can_points.shape[0]):
+                occ_points_curr = can_points[b_idx].clone()
                 occ_points_curr = occ_points_curr.detach().cpu().numpy()
                 gt_occ_curr = check_mesh_contains(can_mesh, occ_points_curr).astype(np.float32)
                 gt_occ[b_idx] = torch.Tensor(gt_occ_curr)
